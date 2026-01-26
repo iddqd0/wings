@@ -221,8 +221,10 @@ func (e *Environment) Create() error {
 					ConfigOnly: false,
 					Options: map[string]string{
 						"encryption": "false",
-						"com.docker.network.bridge.default_bridge": "false",
-						"com.docker.network.host_ipv4":             a.DefaultMapping.Ip,
+						"com.docker.network.bridge.default_bridge": 		"false",
+						"com.docker.network.host_ipv4": 					a.DefaultMapping.Ip,
+						"com.docker.network.bridge.enable_icc": 			strconv.FormatBool(cfg.Docker.Network.EnableICC),
+						"com.docker.network.driver.mtu": 					strconv.FormatInt(cfg.Docker.Network.NetworkMTU, 10),
 					},
 				}); err != nil {
 					return err
