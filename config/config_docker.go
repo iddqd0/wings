@@ -91,6 +91,9 @@ type DockerConfiguration struct {
 
 	// Sets the IPS that the user is able to bind to
 	SystemIps []string `default:"[]" json:"system_ips" yaml:"system_ips"`
+	
+	// Configures seccomp value
+	Seccomp string `default:"" json:"seccomp" yaml:"seccomp"`
 
 	LogConfig struct {
 		Type   string            `default:"local" json:"type" yaml:"type"`

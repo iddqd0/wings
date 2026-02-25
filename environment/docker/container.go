@@ -235,6 +235,12 @@ func (e *Environment) Create() error {
 		}
 	}
 
+	securityOpt := []string{"no-new-privileges"}
+
+	if cfg.Docker.Seccomp != "" {
+		securityOpt = append(securityOpt, "seccomp=" + cfg.Docker.Seccomp)
+	}
+	
 	hostConf := &container.HostConfig{
 		PortBindings: a.DockerBindings(),
 
@@ -260,7 +266,7 @@ func (e *Environment) Create() error {
 		// about anything else in it.
 		LogConfig: cfg.Docker.ContainerLogConfig(),
 
-		SecurityOpt:    []string{"no-new-privileges"},
+		SecurityOpt:    securityOpt,
 		ReadonlyRootfs: true,
 		CapDrop: []string{
 			"setpcap", "mknod", "audit_write", "net_raw", "dac_override",
