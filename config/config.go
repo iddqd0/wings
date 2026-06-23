@@ -214,6 +214,11 @@ type SystemConfiguration struct {
 	// disk usage is not a concern.
 	DiskCheckInterval int64 `default:"150" yaml:"disk_check_interval"`
 
+	// Quotas define is quota management is enabled on the Data directory
+	Quotas struct {
+		Enabled bool `json:"enabled" yaml:"enabled" default:"false"`
+	} `json:"quotas" yaml:"quotas"`
+
 	// ActivitySendInterval is the amount of time that should ellapse between aggregated server activity
 	// being sent to the Panel. By default this will send activity collected over the last minute. Keep
 	// in mind that only a fixed number of activity log entries, defined by ActivitySendCount, will be sent
@@ -297,6 +302,17 @@ type Transfers struct {
 	//
 	// Defaults to 0 (unlimited)
 	DownloadLimit int `default:"0" yaml:"download_limit"`
+
+	// StoragePool configures whether this node participates in a shared storage pool.
+	StoragePool StoragePoolConfiguration `yaml:"storage_pool"`
+}
+
+type StoragePoolConfiguration struct {
+	// Enabled signals that this node shares a common data volume with other nodes.
+	Enabled bool `default:"false" yaml:"enabled"`
+
+	// PoolName is a per-node identifier used to compare shared storage pool membership across nodes.
+	PoolName string `yaml:"pool_name"`
 }
 
 type ConsoleThrottles struct {
@@ -327,6 +343,10 @@ type Configuration struct {
 	// Determines if wings should be running in debug mode. This value is ignored
 	// if the debug flag is passed through the command line arguments.
 	Debug bool
+
+	// Determines if wings should run with minimal logging output. This value is
+	// ignored if debug mode is enabled.
+	Quiet bool
 
 	AppName string `default:"pelican" json:"app_name" yaml:"app_name"`
 
