@@ -15,7 +15,6 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/pelican/wings/config"
 	"github.com/pelican/wings/environment"
-	"github.com/pelican/wings/environment/docker"
 	"github.com/pelican/wings/remote"
 	"github.com/pelican/wings/server/filesystem"
 	"github.com/pelican/wings/server/filesystem/quotas"
@@ -25,13 +24,63 @@ type Manager struct {
 	mu      sync.RWMutex
 	client  remote.Client
 	servers []*Server
+
+	// envFactory builds the process environment for every server initialized
+	// through this manager. Defaults to DockerEnvironmentFactory.
+	envFactory EnvironmentFactory
+	// installer runs installation scripts for servers initialized through this
+	// manager. Defaults to the Docker based installer.
+	installer Installer
+	// transfersIntoExisting lets an incoming transfer fill a server the manager
+	// already has, see WithTransfersIntoExistingServers.
+	transfersIntoExisting bool
+}
+
+// ManagerOption configures optional behaviour of a Manager.
+type ManagerOption func(m *Manager)
+
+// WithEnvironmentFactory sets the factory used to create the process
+// environment of every server initialized by the manager. When not set, the
+// Docker environment is used.
+func WithEnvironmentFactory(f EnvironmentFactory) ManagerOption {
+	return func(m *Manager) {
+		m.envFactory = f
+	}
+}
+
+// WithInstaller sets the installer used to run installation scripts for every
+// server initialized by the manager. When not set, scripts run in a Docker
+// container.
+func WithInstaller(i Installer) ManagerOption {
+	return func(m *Manager) {
+		m.installer = i
+	}
+}
+
+// WithTransfersIntoExistingServers lets an incoming transfer fill a server the
+// manager already has, instead of refusing it. It is meant for embedders that
+// create the server before the transfer arrives. The server must be offline and
+// not busy, and its data directory empty; the transfer holds the server's power
+// lock while it runs (see Server.LockForIncomingTransfer). A failed transfer
+// keeps the server and its environment, empties the data directory again and
+// removes the backups the transfer received.
+func WithTransfersIntoExistingServers() ManagerOption {
+	return func(m *Manager) {
+		m.transfersIntoExisting = true
+	}
+}
+
+// TransfersIntoExistingServers reports whether an incoming transfer may fill a
+// server the manager already has, see WithTransfersIntoExistingServers.
+func (m *Manager) TransfersIntoExistingServers() bool {
+	return m.transfersIntoExisting
 }
 
 // NewManager returns a new server manager instance. This will boot up all the
 // servers that are currently present on the filesystem and set them into the
 // manager.
-func NewManager(ctx context.Context, client remote.Client) (*Manager, error) {
-	m := NewEmptyManager(client)
+func NewManager(ctx context.Context, client remote.Client, opts ...ManagerOption) (*Manager, error) {
+	m := NewEmptyManager(client, opts...)
 	if err := m.init(ctx); err != nil {
 		return nil, err
 	}
@@ -41,8 +90,12 @@ func NewManager(ctx context.Context, client remote.Client) (*Manager, error) {
 // NewEmptyManager returns a new empty manager collection without actually
 // loading any of the servers from the disk. This allows the caller to set their
 // own servers into the collection as needed.
-func NewEmptyManager(client remote.Client) *Manager {
-	return &Manager{client: client}
+func NewEmptyManager(client remote.Client, opts ...ManagerOption) *Manager {
+	m := &Manager{client: client}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // Client returns the HTTP client interface that allows interaction with the
@@ -89,6 +142,20 @@ func (m *Manager) Add(s *Server) {
 	m.mu.Lock()
 	m.servers = append(m.servers, s)
 	m.mu.Unlock()
+}
+
+// AddIfMissing adds an item to the collection store unless a server with the
+// same ID is already present, returning false if it was not added.
+func (m *Manager) AddIfMissing(s *Server) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, v := range m.servers {
+		if v.ID() == s.ID() {
+			return false
+		}
+	}
+	m.servers = append(m.servers, s)
+	return true
 }
 
 // Get returns a single server instance and a boolean value indicating if it was
@@ -153,7 +220,7 @@ func (m *Manager) PersistStates() error {
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	if err := os.WriteFile(config.Get().System.GetStatesPath(), data, 0o644); err != nil {
+	if err := os.WriteFile(config.Get().System.GetStatesPath(), data, 0o600); err != nil {
 		return errors.WithStack(err)
 	}
 	return nil
@@ -161,7 +228,7 @@ func (m *Manager) PersistStates() error {
 
 // ReadStates returns the state of the servers.
 func (m *Manager) ReadStates() (map[string]string, error) {
-	f, err := os.OpenFile(config.Get().System.GetStatesPath(), os.O_RDONLY|os.O_CREATE, 0o644)
+	f, err := os.OpenFile(config.Get().System.GetStatesPath(), os.O_RDONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -180,10 +247,13 @@ func (m *Manager) ReadStates() (map[string]string, error) {
 	return out, nil
 }
 
-// InitServer initializes a server using a data byte array. This will be
-// marshaled into the given struct using a YAML marshaler. This will also
-// configure the given environment for a server.
-func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, error) {
+// InitServer initializes the server with the given uuid using a data byte
+// array. This will be marshaled into the given struct using a YAML marshaler.
+// This will also configure the given environment for a server.
+//
+// The configuration returned by the Panel must be for the requested server,
+// since its UUID is used to build paths on the host.
+func (m *Manager) InitServer(uuid string, data remote.ServerConfigurationResponse) (*Server, error) {
 	s, err := New(m.client)
 	if err != nil {
 		return nil, err
@@ -193,6 +263,9 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 	// remaining functionality in this call.
 	if err = s.SyncWithConfiguration(data); err != nil {
 		return nil, errors.WithStackIf(err)
+	}
+	if s.ID() != uuid {
+		return nil, errors.New("server: configuration returned by the Panel is for a different server")
 	}
 
 	d, err := s.EnsureDataDirectoryExists()
@@ -223,9 +296,6 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 		}
 	}
 
-	// Right now we only support a Docker based environment, so I'm going to hard code
-	// this logic in. When we're ready to support other environment we'll need to make
-	// some modifications here, obviously.
 	settings := environment.Settings{
 		Mounts:      s.Mounts(),
 		Allocations: s.cfg.Allocations,
@@ -234,14 +304,19 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 	}
 
 	envCfg := environment.NewConfiguration(settings, s.GetEnvironmentVariables())
-	meta := docker.Metadata{
-		Image: s.Config().Container.Image,
-	}
 
-	if env, err := docker.New(s.ID(), &meta, envCfg); err != nil {
+	// Build the process environment through the configured factory. The default
+	// is the Docker environment, alternative environments are registered with
+	// WithEnvironmentFactory.
+	factory := m.envFactory
+	if factory == nil {
+		factory = DockerEnvironmentFactory
+	}
+	if env, err := factory(s, envCfg); err != nil {
 		return nil, err
 	} else {
 		s.Environment = env
+		s.installer = m.installer
 		s.StartEventListeners()
 	}
 
@@ -284,12 +359,15 @@ func (m *Manager) init(ctx context.Context) error {
 				log.WithField("server", data.Uuid).WithField("error", err).Error("failed to parse server configuration from API response, skipping...")
 				return
 			}
-			s, err := m.InitServer(d)
+			s, err := m.InitServer(data.Uuid, d)
 			if err != nil {
 				log.WithField("server", data.Uuid).WithField("error", err).Error("failed to load server, skipping...")
 				return
 			}
-			m.Add(s)
+			if !m.AddIfMissing(s) {
+				s.Discard()
+				log.WithField("server", data.Uuid).Error("server was returned by the API more than once, skipping...")
+			}
 		})
 	}
 
