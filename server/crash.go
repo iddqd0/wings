@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"slices"
 
 	"emperror.dev/errors"
 	"github.com/apex/log"
@@ -66,9 +67,13 @@ func (s *Server) handleServerCrash() error {
 
 	// If the system is not configured to detect a clean exit code as a crash, and the
 	// crash is not the result of the program running out of memory, do nothing.
-	if exitCode == 0 && !oomKilled && !config.Get().System.CrashDetection.DetectCleanExitAsCrash {
-		s.Log().Debug("server exited with successful exit code; system is configured to not detect this as a crash")
-		return nil
+	if cleanExitCodes := config.Get().System.CrashDetection.CleanExitCodes; len(cleanExitCodes) > 0 {
+		// Go is **fucking retarded**.
+		var strExitCode = strconv.FormatUint(uint64(exitCode), 10)
+		if slices.Contains(cleanExitCodes, strExitCode) && !oomKilled && !config.Get().System.CrashDetection.DetectCleanExitAsCrash {
+			s.Log().Debug("server exited with successful exit code; system is configured to not detect this as a crash")
+			return nil
+		}
 	}
 
 	// Get the last lines from the output before the crash so we can log it

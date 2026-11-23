@@ -282,10 +282,14 @@ type CrashDetection struct {
 	// CrashDetectionEnabled sets if crash detection is enabled globally for all servers on this node.
 	CrashDetectionEnabled bool `default:"true" yaml:"enabled"`
 
-	// Determines if Wings should detect a server that stops with a normal exit code of
-	// "0" as being crashed if the process stopped without any Wings interaction. E.g.
+	// Determines if Wings should detect a server that stops with a normal exit code
+	// (specified below) as being crashed if the process stopped without any Wings interaction. E.g.
 	// the user did not press the stop button, but the process stopped cleanly.
 	DetectCleanExitAsCrash bool `default:"true" yaml:"detect_clean_exit_as_crash"`
+
+	// List of exit codes that are considered "normal" and not a "crash"
+	// By default includes 0 and 130 (SIGINT)
+	CleanExitCodes []string `default:"[\"0\", \"130\"]" yaml:"clean_exit_codes"`
 
 	// Timeout specifies the timeout between crashes that will not cause the server
 	// to be automatically restarted, this value is used to prevent servers from
